@@ -1,0 +1,10 @@
+# qlot managed dependencies
+.qlot/
+
+# SBCL compiled fasls
+*.fasl
+
+# Editor backups
+*~
+\#*\#
+.*.swp
