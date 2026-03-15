@@ -59,6 +59,47 @@ Final answers are shown inline rather than in a separate buffer.")
     (:name "RLM"
      :keymap *rlm-mode-keymap*))
 
+(define-command rlm-insert-file-reference () ()
+  "Prompt for a file and insert an @file reference at point."
+  (let ((file (prompt-for-file "File: "
+                               :directory (buffer-directory))))
+    (when file
+      (insert-string (current-point)
+                     (format nil "@~A " (namestring file))))))
+
+(define-key *rlm-mode-keymap* "@" 'rlm-insert-file-reference)
+
+;;; ============================================================
+;;; @file reference handling
+;;; ============================================================
+
+(defvar *rlm-file-reference-scanner*
+  (cl-ppcre:create-scanner "@((?:/[^\\s]+)+)")
+  "Scanner for @/path/to/file references in input text.")
+
+(defun extract-file-references (text)
+  "Extract @/path/to/file references from TEXT.
+Returns (values cleaned-text list-of-pathnames)."
+  (let ((paths nil))
+    (cl-ppcre:do-matches-as-strings (match *rlm-file-reference-scanner* text)
+      (let ((path (subseq match 1)))
+        (when (probe-file path)
+          (pushnew path paths :test #'string=))))
+    (let ((cleaned (string-trim
+                    '(#\Space #\Tab)
+                    (cl-ppcre:regex-replace-all *rlm-file-reference-scanner* text ""))))
+      (values cleaned (nreverse paths)))))
+
+(defun build-file-context (paths)
+  "Read files at PATHS and build a context string with their contents."
+  (with-output-to-string (s)
+    (dolist (path paths)
+      (handler-case
+          (let ((content (uiop:read-file-string path)))
+            (format s "~%--- File: ~A ---~%~A~%" path content))
+        (error (e)
+          (format s "~%--- File: ~A (error: ~A) ---~%" path e))))))
+
 ;;; ============================================================
 ;;; Output helpers — append styled text to the RLM buffer
 ;;; ============================================================
@@ -316,7 +357,13 @@ When TASK-MODE is T, final answers are shown inline instead of in a separate buf
            (lem/listener-mode:refresh-prompt buf)
            (rlm-reset-write-point buf))))
       (t
-       (run-rlm-query trimmed)))))
+       (multiple-value-bind (question paths) (extract-file-references trimmed)
+         (if paths
+             (run-rlm-query question
+                            :context (format nil "~A~%~%The user referenced these files. Use read-file and list-directory for further exploration.~%~A"
+                                             (build-file-context paths)
+                                             (if (plusp (length question)) "" "No additional question — just analyze the files.")))
+             (run-rlm-query question)))))))
 
 ;;; ============================================================
 ;;; Modeline
