@@ -259,6 +259,12 @@ Called from within send-event, so we're in the editor thread."
       (rlm/repl:register-tool *rlm-environment*
                                (rlm/tools:make-grep-tool
                                 :allowed-dirs dirs)))
+    ;; Register VCS tools if in a version-controlled project
+    (when (handler-case
+              (call-with-vcs (lambda (vcs) (declare (ignore vcs)) t))
+            (error () nil))
+      (dolist (tool (rlm-legit-tools))
+        (rlm/repl:register-tool *rlm-environment* tool)))
     ;; Web tools if available
     (when rlm/tools:*jina-api-key*
       (rlm/repl:register-tool *rlm-environment*

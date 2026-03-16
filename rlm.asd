@@ -16,9 +16,10 @@
 (defsystem "rlm/mode"
   :version "0.1.0"
   :description "RLM integration for the Lem editor"
-  :depends-on ("rlm" "lem/core" "lem-markdown-mode")
+  :depends-on ("rlm" "lem/core" "lem-markdown-mode" "lem-legit")
   :serial t
   :components ((:module "mode"
                 :components ((:file "package")
                              (:file "rlm-tools")
+                             (:file "rlm-legit-tools")
                              (:file "rlm-mode")))))
