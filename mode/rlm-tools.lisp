@@ -15,24 +15,15 @@ When NIL (default), highlight the edit and prompt the user to accept/reject.")
   (t :background :base0B :foreground :base00 :bold t))
 
 ;;; ============================================================
-;;; Spinner pause/resume — avoid Lem timer crash during prompts
+;;; Spinner management — stop before prompts to avoid Lem timer crash
 ;;; ============================================================
 
-(defun rlm-pause-spinner ()
-  "Stop the spinner temporarily before prompting the user.
-Returns the spinner's message for later resume, or NIL."
+(defun rlm-stop-spinner ()
+  "Stop the spinner before prompting the user or making synchronous calls.
+The event handler will recreate it on the next agent iteration."
   (when *rlm-spinner*
-    (let ((msg (slot-value *rlm-spinner* 'lem/loading-spinner::loading-message)))
-      (lem/loading-spinner:stop-loading-spinner *rlm-spinner*)
-      (setf *rlm-spinner* nil)
-      msg)))
-
-(defun rlm-resume-spinner (saved-message)
-  "Restart the spinner with SAVED-MESSAGE after a prompt completes."
-  (when (and saved-message (rlm-buffer))
-    (setf *rlm-spinner*
-          (lem/loading-spinner:start-loading-spinner
-           :modeline :buffer (rlm-buffer) :loading-message saved-message))))
+    (lem/loading-spinner:stop-loading-spinner *rlm-spinner*)
+    (setf *rlm-spinner* nil)))
 
 ;;; ============================================================
 ;;; Buffer text helpers
@@ -139,10 +130,10 @@ Returns the spinner's message for later resume, or NIL."
              (send-event
               (lambda ()
                 (handler-case
-                    (let ((saved-spinner (rlm-pause-spinner)))
+                    (progn (rlm-stop-spinner)
                       (let ((accepted (prompt-for-y-or-n-p
                                        (format nil "Create ~A" path))))
-                        (rlm-resume-spinner saved-spinner)
+                        
                         (cond
                           (accepted
                            (ensure-directories-exist path)
@@ -302,14 +293,14 @@ string. Returns the result string for the agent, or an error/rejection message."
                                        (line-number-at-point (overlay-start overlay))))
                        (redraw-display)
                        ;; Pause spinner to avoid Lem timer crash during prompt
-                       (let ((saved-spinner (rlm-pause-spinner)))
+                       (progn (rlm-stop-spinner)
                          ;; Prompt: single-keypress a/s/c/h
                          (let ((ch (loop :for c := (prompt-for-character
                                                     "[a]ccept [s]kip [c]hange [h]alt? ")
                                          :do (when (member c '(#\a #\s #\c #\h))
                                                (return c)))))
                            (delete-overlay overlay)
-                           (rlm-resume-spinner saved-spinner)
+                           
                            (cond
                              ((eql ch #\a)
                               (bt2:with-lock-held (lock)
@@ -410,10 +401,10 @@ string. Returns the result string for the agent, or an error/rejection message."
                    (cv (bt2:make-condition-variable :name "rlm-save")))
                (send-event
                 (lambda ()
-                  (let ((saved-spinner (rlm-pause-spinner)))
+                  (progn (rlm-stop-spinner)
                     (let ((accepted (prompt-for-y-or-n-p
                                      (format nil "Save ~A" buffer-name))))
-                      (rlm-resume-spinner saved-spinner)
+                      
                       (cond
                         (accepted
                          (save-buffer buffer)
@@ -444,10 +435,10 @@ string. Returns the result string for the agent, or an error/rejection message."
          (send-event
           (lambda ()
             (handler-case
-                (let ((saved-spinner (rlm-pause-spinner)))
+                (progn (rlm-stop-spinner)
                   (let ((answer (prompt-for-string
                                  (format nil "~A " question))))
-                    (rlm-resume-spinner saved-spinner)
+                    
                     (bt2:with-lock-held (lock)
                       (setf result (or answer ""))
                       (bt2:condition-notify cv))))
@@ -487,13 +478,13 @@ string. Returns the result string for the agent, or an error/rejection message."
                (send-event
                 (lambda ()
                   (handler-case
-                      (let ((saved-spinner (rlm-pause-spinner)))
+                      (progn (rlm-stop-spinner)
                         (let ((ch (loop :for c := (prompt-for-character
                                                    (format nil "Run `~A` in ~A  [y]es [n]o [e]dit [h]alt? "
                                                            command dir))
                                         :do (when (member c '(#\y #\n #\e #\h))
                                               (return c)))))
-                          (rlm-resume-spinner saved-spinner)
+                          
                           (case ch
                             (#\y
                              (let ((output (run-shell-command command dir)))

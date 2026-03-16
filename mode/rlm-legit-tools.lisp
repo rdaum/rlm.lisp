@@ -108,10 +108,10 @@ Sets CWD to the project root, as the porcelain layer expects."
              (send-event
               (lambda ()
                 (handler-case
-                    (let ((saved-spinner (rlm-pause-spinner)))
+                    (progn (rlm-stop-spinner)
                       (let ((accepted (prompt-for-y-or-n-p
                                        (format nil "Commit: ~A" message))))
-                        (rlm-resume-spinner saved-spinner)
+                        
                         (cond
                           (accepted
                            (with-vcs (vcs)
@@ -197,10 +197,10 @@ Sets CWD to the project root, as the porcelain layer expects."
              (send-event
               (lambda ()
                 (handler-case
-                    (let ((saved-spinner (rlm-pause-spinner)))
+                    (progn (rlm-stop-spinner)
                       (let ((accepted (prompt-for-y-or-n-p
                                        (format nil "Checkout ~A" branch))))
-                        (rlm-resume-spinner saved-spinner)
+                        
                         (cond
                           (accepted
                            (with-vcs (vcs)
@@ -239,9 +239,9 @@ Sets CWD to the project root, as the porcelain layer expects."
              (send-event
               (lambda ()
                 (handler-case
-                    (let ((saved-spinner (rlm-pause-spinner)))
+                    (progn (rlm-stop-spinner)
                       (let ((accepted (prompt-for-y-or-n-p "Push to remote")))
-                        (rlm-resume-spinner saved-spinner)
+                        
                         (cond
                           (accepted
                            (with-vcs (vcs)
@@ -280,9 +280,9 @@ Sets CWD to the project root, as the porcelain layer expects."
              (send-event
               (lambda ()
                 (handler-case
-                    (let ((saved-spinner (rlm-pause-spinner)))
+                    (progn (rlm-stop-spinner)
                       (let ((accepted (prompt-for-y-or-n-p "Pull from remote")))
-                        (rlm-resume-spinner saved-spinner)
+                        
                         (cond
                           (accepted
                            (with-vcs (vcs)
@@ -318,10 +318,10 @@ Sets CWD to the project root, as the porcelain layer expects."
          (send-event
           (lambda ()
             (handler-case
-                (let ((saved-spinner (rlm-pause-spinner)))
+                (progn (rlm-stop-spinner)
                   (let ((accepted (prompt-for-y-or-n-p
                                    (format nil "DISCARD all changes to ~A" file))))
-                    (rlm-resume-spinner saved-spinner)
+                    
                     (cond
                       (accepted
                        (with-vcs (vcs)

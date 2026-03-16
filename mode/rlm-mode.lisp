@@ -190,8 +190,14 @@ Must be called from the editor thread (via send-event)."
   "Handle an RLM event by appending styled output to the chat buffer.
 Called from within send-event, so we're in the editor thread."
   (flet ((update-spinner (msg)
-           (when *rlm-spinner*
-             (setf (slot-value *rlm-spinner* 'lem/loading-spinner::loading-message) msg))))
+           (cond
+             (*rlm-spinner*
+              (setf (slot-value *rlm-spinner* 'lem/loading-spinner::loading-message) msg))
+             ;; Spinner was killed by a tool prompt — recreate it
+             ((rlm-buffer)
+              (setf *rlm-spinner*
+                    (lem/loading-spinner:start-loading-spinner
+                     :modeline :buffer (rlm-buffer) :loading-message msg))))))
   (case event-type
     (:thinking
      (let ((n (first args)))
@@ -265,6 +271,9 @@ Called from within send-event, so we're in the editor thread."
             (error () nil))
       (dolist (tool (rlm-legit-tools))
         (rlm/repl:register-tool *rlm-environment* tool)))
+    ;; Register LSP tools (they check per-call if a server is active)
+    (dolist (tool (rlm-lsp-tools))
+      (rlm/repl:register-tool *rlm-environment* tool))
     ;; Web tools if available
     (when rlm/tools:*jina-api-key*
       (rlm/repl:register-tool *rlm-environment*
