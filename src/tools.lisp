@@ -60,6 +60,51 @@ MAX-CHARS limits how much of the file to return."
                    (subseq content 0 limit) limit)
            content)))))
 
+(defun make-grep-tool (&key (allowed-dirs (list (uiop:getcwd))) (max-matches 100))
+  "Create a tool that searches file contents by regex.
+ALLOWED-DIRS restricts which directories can be searched.
+MAX-MATCHES limits results returned."
+  (rlm/repl:make-tool
+   :name "grep"
+   :description "Search for a regex pattern in files under a directory. Returns matching lines with file paths and line numbers. Useful for finding definitions, references, or patterns across a codebase."
+   :parameter-doc "(call-tool \"grep\" pattern directory) — pattern is a regex string, directory is the path to search. Optionally (call-tool \"grep\" pattern directory :glob \"*.lisp\") to filter by extension."
+   :execute-fn
+   (lambda (pattern directory &key (glob "*"))
+     (unless (safe-path-p directory allowed-dirs)
+       (error "Access denied: ~A is not within allowed directories" directory))
+     (let ((scanner (handler-case (cl-ppcre:create-scanner pattern)
+                      (error (e) (error "Invalid regex: ~A" e))))
+           (matches nil)
+           (count 0)
+           (dir (truename directory)))
+       (labels ((search-dir (d)
+                  (when (> count max-matches) (return-from search-dir))
+                  ;; Search files matching glob
+                  (dolist (f (directory (merge-pathnames glob d)))
+                    (when (> count max-matches) (return-from search-dir))
+                    (when (and (pathname-name f) (not (pathname-match-p f "*.fasl")))
+                      (handler-case
+                          (with-open-file (in f :direction :input :if-does-not-exist nil)
+                            (when in
+                              (loop :for line := (read-line in nil nil)
+                                    :for line-num :from 1
+                                    :while (and line (<= count max-matches))
+                                    :when (cl-ppcre:scan scanner line)
+                                    :do (push (format nil "~A:~A: ~A"
+                                                      (enough-namestring f dir)
+                                                      line-num line)
+                                              matches)
+                                        (incf count))))
+                        (error () nil))))
+                  ;; Recurse into subdirectories
+                  (dolist (sub (directory (merge-pathnames "*/" d)))
+                    (search-dir sub))))
+         (search-dir dir))
+       (if matches
+           (format nil "~A matches:~%~{~A~%~}"
+                   count (nreverse matches))
+           "No matches found.")))))
+
 ;;; ============================================================
 ;;; Web reading via Jina Reader
 ;;; ============================================================

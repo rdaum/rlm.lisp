@@ -15,6 +15,26 @@ When NIL (default), highlight the edit and prompt the user to accept/reject.")
   (t :background :base0B :foreground :base00 :bold t))
 
 ;;; ============================================================
+;;; Spinner pause/resume — avoid Lem timer crash during prompts
+;;; ============================================================
+
+(defun rlm-pause-spinner ()
+  "Stop the spinner temporarily before prompting the user.
+Returns the spinner's message for later resume, or NIL."
+  (when *rlm-spinner*
+    (let ((msg (slot-value *rlm-spinner* 'lem/loading-spinner::loading-message)))
+      (lem/loading-spinner:stop-loading-spinner *rlm-spinner*)
+      (setf *rlm-spinner* nil)
+      msg)))
+
+(defun rlm-resume-spinner (saved-message)
+  "Restart the spinner with SAVED-MESSAGE after a prompt completes."
+  (when (and saved-message (rlm-buffer))
+    (setf *rlm-spinner*
+          (lem/loading-spinner:start-loading-spinner
+           :modeline :buffer (rlm-buffer) :loading-message saved-message))))
+
+;;; ============================================================
 ;;; Buffer text helpers
 ;;; ============================================================
 
@@ -93,6 +113,61 @@ When NIL (default), highlight the edit and prompt the user to accept/reject.")
                (buffer-name buffer)
                (buffer-nlines buffer)
                (or (buffer-filename buffer) path))))))
+
+(defun make-create-file-tool ()
+  "Tool that creates a new file with content."
+  (rlm/repl:make-tool
+   :name "create-file"
+   :description "Create a new file with the given content. The file must not already exist. Opens it in a buffer after creation."
+   :parameter-doc "(call-tool \"create-file\" path content)"
+   :execute-fn
+   (lambda (path content)
+     (when (probe-file path)
+       (error "File already exists: ~A — use open-file + edit-buffer instead" path))
+     (if *rlm-yeet-mode*
+         (progn
+           (ensure-directories-exist path)
+           (with-open-file (out path :direction :output :if-does-not-exist :create)
+             (write-string content out))
+           (let ((buffer (find-file-buffer path)))
+             (format nil "Created ~A (~A lines)"
+                     path (if buffer (buffer-nlines buffer) "?"))))
+         ;; Confirm mode
+         (let ((result nil))
+           (let ((lock (bt2:make-lock :name "rlm-create"))
+                 (cv (bt2:make-condition-variable :name "rlm-create")))
+             (send-event
+              (lambda ()
+                (handler-case
+                    (let ((saved-spinner (rlm-pause-spinner)))
+                      (let ((accepted (prompt-for-y-or-n-p
+                                       (format nil "Create ~A" path))))
+                        (rlm-resume-spinner saved-spinner)
+                        (cond
+                          (accepted
+                           (ensure-directories-exist path)
+                           (with-open-file (out path :direction :output
+                                                     :if-does-not-exist :create)
+                             (write-string content out))
+                           (let ((buffer (find-file-buffer path)))
+                             (when buffer
+                               (switch-to-window (pop-to-buffer buffer)))
+                             (bt2:with-lock-held (lock)
+                               (setf result (format nil "Created ~A (~A lines)"
+                                                    path (if buffer (buffer-nlines buffer) "?")))
+                               (bt2:condition-notify cv))))
+                          (t
+                           (bt2:with-lock-held (lock)
+                             (setf result "SKIPPED: User declined to create file.")
+                             (bt2:condition-notify cv))))))
+                  (error (e)
+                    (bt2:with-lock-held (lock)
+                      (setf result (format nil "Error: ~A" e))
+                      (bt2:condition-notify cv))))))
+             (bt2:with-lock-held (lock)
+               (loop :until result
+                     :do (bt2:condition-wait cv lock)))
+             result))))))
 
 (defun make-present-tool ()
   "Tool that opens markdown content in a new buffer with markdown-mode."
@@ -226,13 +301,16 @@ string. Returns the result string for the agent, or an error/rejection message."
                          (move-to-line (buffer-point buffer)
                                        (line-number-at-point (overlay-start overlay))))
                        (redraw-display)
-                       ;; Prompt: single-keypress a/s/c/h
-                       (let ((ch (loop :for c := (prompt-for-character
-                                                  "[a]ccept [s]kip [c]hange [h]alt? ")
-                                       :do (when (member c '(#\a #\s #\c #\h))
-                                             (return c)))))
-                         (delete-overlay overlay)
-                         (cond
+                       ;; Pause spinner to avoid Lem timer crash during prompt
+                       (let ((saved-spinner (rlm-pause-spinner)))
+                         ;; Prompt: single-keypress a/s/c/h
+                         (let ((ch (loop :for c := (prompt-for-character
+                                                    "[a]ccept [s]kip [c]hange [h]alt? ")
+                                         :do (when (member c '(#\a #\s #\c #\h))
+                                               (return c)))))
+                           (delete-overlay overlay)
+                           (rlm-resume-spinner saved-spinner)
+                           (cond
                              ((eql ch #\a)
                               (bt2:with-lock-held (lock)
                                 (setf result (funcall description-fn))
@@ -260,7 +338,7 @@ string. Returns the result string for the agent, or an error/rejection message."
                               (redraw-display)
                               (bt2:with-lock-held (lock)
                                 (setf result "SKIPPED: User skipped this edit. Move on to the next change.")
-                                (bt2:condition-notify cv))))))))
+                                (bt2:condition-notify cv)))))))))
                (error (e)
                  (bt2:with-lock-held (lock)
                    (setf result (format nil "Error: ~A" e))
@@ -332,19 +410,21 @@ string. Returns the result string for the agent, or an error/rejection message."
                    (cv (bt2:make-condition-variable :name "rlm-save")))
                (send-event
                 (lambda ()
-                  (let ((accepted (prompt-for-y-or-n-p
-                                   (format nil "Save ~A" buffer-name))))
-                    (cond
-                      (accepted
-                       (save-buffer buffer)
-                       (bt2:with-lock-held (lock)
-                         (setf result (format nil "Saved ~A to ~A"
-                                              buffer-name (buffer-filename buffer)))
-                         (bt2:condition-notify cv)))
-                      (t
-                       (bt2:with-lock-held (lock)
-                         (setf result "SKIPPED: User declined to save.")
-                         (bt2:condition-notify cv)))))))
+                  (let ((saved-spinner (rlm-pause-spinner)))
+                    (let ((accepted (prompt-for-y-or-n-p
+                                     (format nil "Save ~A" buffer-name))))
+                      (rlm-resume-spinner saved-spinner)
+                      (cond
+                        (accepted
+                         (save-buffer buffer)
+                         (bt2:with-lock-held (lock)
+                           (setf result (format nil "Saved ~A to ~A"
+                                                buffer-name (buffer-filename buffer)))
+                           (bt2:condition-notify cv)))
+                        (t
+                         (bt2:with-lock-held (lock)
+                           (setf result "SKIPPED: User declined to save.")
+                           (bt2:condition-notify cv))))))))
                (bt2:with-lock-held (lock)
                  (loop :until result
                        :do (bt2:condition-wait cv lock)))
@@ -364,11 +444,13 @@ string. Returns the result string for the agent, or an error/rejection message."
          (send-event
           (lambda ()
             (handler-case
-                (let ((answer (prompt-for-string
-                               (format nil "~A " question))))
-                  (bt2:with-lock-held (lock)
-                    (setf result (or answer ""))
-                    (bt2:condition-notify cv)))
+                (let ((saved-spinner (rlm-pause-spinner)))
+                  (let ((answer (prompt-for-string
+                                 (format nil "~A " question))))
+                    (rlm-resume-spinner saved-spinner)
+                    (bt2:with-lock-held (lock)
+                      (setf result (or answer ""))
+                      (bt2:condition-notify cv))))
               (error (e)
                 (bt2:with-lock-held (lock)
                   (setf result (format nil "Error: ~A" e))
@@ -378,13 +460,98 @@ string. Returns the result string for the agent, or an error/rejection message."
                  :do (bt2:condition-wait cv lock)))
          result)))))
 
+(defun make-shell-tool ()
+  "Tool that runs a shell command with user confirmation."
+  (rlm/repl:make-tool
+   :name "shell"
+   :description "Run a shell command and return its stdout and stderr. The user will be prompted to approve the command before it runs. Use for builds, tests, git operations, or any external tool. The command must be a SINGLE STRING, e.g. \"git diff HEAD~1\" — do NOT pass separate arguments."
+   :parameter-doc "(call-tool \"shell\" \"git status\") or (call-tool \"shell\" \"make test\" \"/home/user/project/\")"
+   :execute-fn
+   (lambda (command &rest rest)
+     (let ((directory (when (and rest (= 1 (length rest)))
+                        (first rest)))
+           ;; If agent passed args separately, join them
+           (command (if (and rest (> (length rest) 1))
+                        (format nil "~A ~{~A~^ ~}" command rest)
+                        command)))
+       (let ((dir (or directory
+                     (when *rlm-working-directory*
+                       (namestring *rlm-working-directory*))
+                     (namestring (uiop:getcwd)))))
+         (if *rlm-yeet-mode*
+           (run-shell-command command dir)
+           ;; Confirm mode: prompt user
+           (let ((result nil))
+             (let ((lock (bt2:make-lock :name "rlm-shell"))
+                   (cv (bt2:make-condition-variable :name "rlm-shell")))
+               (send-event
+                (lambda ()
+                  (handler-case
+                      (let ((saved-spinner (rlm-pause-spinner)))
+                        (let ((ch (loop :for c := (prompt-for-character
+                                                   (format nil "Run `~A` in ~A  [y]es [n]o [e]dit [h]alt? "
+                                                           command dir))
+                                        :do (when (member c '(#\y #\n #\e #\h))
+                                              (return c)))))
+                          (rlm-resume-spinner saved-spinner)
+                          (case ch
+                            (#\y
+                             (let ((output (run-shell-command command dir)))
+                               (bt2:with-lock-held (lock)
+                                 (setf result output)
+                                 (bt2:condition-notify cv))))
+                            (#\e
+                             (let* ((edited (prompt-for-string "Command: "
+                                                               :initial-value command))
+                                    (output (run-shell-command edited dir)))
+                               (bt2:with-lock-held (lock)
+                                 (setf result output)
+                                 (bt2:condition-notify cv))))
+                            (#\h
+                             (setf *rlm-cancel* t)
+                             (bt2:with-lock-held (lock)
+                               (setf result "HALTED: User cancelled the task.")
+                               (bt2:condition-notify cv)))
+                            (t
+                             (bt2:with-lock-held (lock)
+                               (setf result "DENIED: User refused to run this command.")
+                               (bt2:condition-notify cv))))))
+                    (error (e)
+                      (bt2:with-lock-held (lock)
+                        (setf result (format nil "Error: ~A" e))
+                        (bt2:condition-notify cv))))))
+               (bt2:with-lock-held (lock)
+                 (loop :until result
+                       :do (bt2:condition-wait cv lock)))
+               result))))))))
+
+(defun run-shell-command (command directory)
+  "Execute COMMAND in DIRECTORY and return formatted output string.
+Closes stdin to prevent interactive hangs."
+  (handler-case
+      (multiple-value-bind (stdout stderr exit-code)
+          (uiop:run-program (list "sh" "-c" command)
+                            :directory directory
+                            :input nil
+                            :output :string
+                            :error-output :string
+                            :ignore-error-status t)
+        (format nil "Exit code: ~A~@[~%stdout:~%~A~]~@[~%stderr:~%~A~]"
+                exit-code
+                (when (plusp (length stdout)) stdout)
+                (when (plusp (length stderr)) stderr)))
+    (error (e)
+      (format nil "Error running command: ~A" e))))
+
 (defun rlm-editor-tools ()
   "Return list of all editor-integration tools for the RLM agent."
   (list (make-read-buffer-tool)
         (make-list-buffers-tool)
         (make-open-file-tool)
+        (make-create-file-tool)
         (make-present-tool)
         (make-edit-buffer-tool)
         (make-insert-lines-tool)
         (make-save-buffer-tool)
-        (make-ask-user-tool)))
+        (make-ask-user-tool)
+        (make-shell-tool)))

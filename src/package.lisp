@@ -63,6 +63,7 @@
   (:use :cl)
   (:export #:make-list-directory-tool
            #:make-read-file-tool
+           #:make-grep-tool
            #:make-web-read-tool
            #:make-web-search-tool
            #:*jina-api-key*))

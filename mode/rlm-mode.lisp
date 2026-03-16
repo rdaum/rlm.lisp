@@ -51,6 +51,9 @@ Final answers are shown inline rather than in a separate buffer.")
 (defvar *rlm-cancel* nil
   "When T, the running query will be cancelled at the next iteration.")
 
+(defvar *rlm-working-directory* nil
+  "Working directory for the RLM session. Set when the RLM buffer is opened.")
+
 ;;; ============================================================
 ;;; Major mode
 ;;; ============================================================
@@ -61,11 +64,18 @@ Final answers are shown inline rather than in a separate buffer.")
 
 (define-command rlm-insert-file-reference () ()
   "Prompt for a file and insert an @file reference at point."
-  (let ((file (prompt-for-file "File: "
-                               :directory (buffer-directory))))
-    (when file
+  (let ((file (prompt-for-string
+               "File: "
+               :initial-value (namestring (or (buffer-directory) ""))
+               :completion-function
+               (lambda (input)
+                 (let ((path (namestring (merge-pathnames input))))
+                   (mapcar #'namestring
+                           (append (directory (format nil "~A*.*" path))
+                                   (directory (format nil "~A*/" path)))))))))
+    (when (and file (plusp (length file)))
       (insert-string (current-point)
-                     (format nil "@~A " (namestring file))))))
+                     (format nil "@~A " file)))))
 
 (define-key *rlm-mode-keymap* "@" 'rlm-insert-file-reference)
 
@@ -245,6 +255,9 @@ Called from within send-event, so we're in the editor thread."
                                 :allowed-dirs dirs))
       (rlm/repl:register-tool *rlm-environment*
                                (rlm/tools:make-list-directory-tool
+                                :allowed-dirs dirs))
+      (rlm/repl:register-tool *rlm-environment*
+                               (rlm/tools:make-grep-tool
                                 :allowed-dirs dirs)))
     ;; Web tools if available
     (when rlm/tools:*jina-api-key*
@@ -264,7 +277,8 @@ When TASK-MODE is T, final answers are shown inline instead of in a separate buf
   (setf *rlm-cancel* nil)
   (let* ((env (ensure-rlm-environment))
          (ctx (or context
-                  (format nil "No specific context. Use your tools (~{~A~^, ~}) to gather information."
+                  (format nil "Working directory: ~A~%No specific context. Use your tools (~{~A~^, ~}) to gather information."
+                          (or *rlm-working-directory* (uiop:getcwd))
                           (mapcar #'rlm/repl:tool-name
                                   (rlm/repl:environment-tools env)))))
          (buffer (rlm-buffer))
@@ -375,7 +389,12 @@ When TASK-MODE is T, final answers are shown inline instead of in a separate buf
 (defun rlm-modeline-element (window)
   "Show current model in the modeline for RLM buffers."
   (when (eq (buffer-major-mode (window-buffer window)) 'rlm-mode)
-    (values (format nil " [~A] " rlm/client:*model*)
+    (values (format nil " [~A] ~A "
+                    rlm/client:*model*
+                    (if *rlm-working-directory*
+                        (enough-namestring *rlm-working-directory*
+                                           (user-homedir-pathname))
+                        "~"))
             'rlm-modeline-attribute
             :right)))
 
@@ -388,6 +407,16 @@ When TASK-MODE is T, final answers are shown inline instead of in a separate buf
   (let ((buffer (make-buffer *rlm-buffer-name*)))
     (switch-to-window (pop-to-buffer buffer))
     (unless (eq (buffer-major-mode buffer) 'rlm-mode)
+      ;; Capture the working directory from whichever buffer was active
+      (unless *rlm-working-directory*
+        (setf *rlm-working-directory*
+              (or (let ((prev (find-if (lambda (b)
+                                         (and (buffer-filename b)
+                                              (not (eq b buffer))))
+                                       (buffer-list))))
+                    (when prev
+                      (uiop:pathname-directory-pathname (buffer-filename prev))))
+                  (uiop:getcwd))))
       (change-buffer-mode buffer 'rlm-mode)
       (lem/listener-mode:start-listener-mode)
       (setf (variable-value 'lem/listener-mode:listener-set-prompt-function
